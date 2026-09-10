@@ -9,7 +9,7 @@ import type {
   DailyTeamRow,
 } from "@/app/actions/daily-runs";
 import { Dialog, useDialogClose } from "@/components/admin/dialog";
-import { DailyCompletionSection, DailyResponseForm } from "./daily-forms";
+import { DailyResponseForm } from "./daily-forms";
 import { DailyResponsesByQuestion } from "./daily-responses-by-question";
 import { DailyConfigPanel } from "./daily-config-panel";
 import { DailyContentCard } from "./daily-content-card";
@@ -167,12 +167,6 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
   const responseRunQuestions = useMemo(
     () => runQuestions.filter((question) => responseRunIds.has(question.run_id)),
     [responseRunIds, runQuestions],
-  );
-  const responsePrefill = useMemo(
-    () => responseTeamId
-      ? data.responsePrefills.find((prefill) => prefill.teamId === responseTeamId && prefill.localDate === selectedDate)
-      : undefined,
-    [data.responsePrefills, responseTeamId, selectedDate],
   );
   const hasResponded = Boolean(mySubmissionForDate);
   const canRespond = pendingResponseRunsForDate.length > 0;
@@ -375,8 +369,6 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
             )}
           </section>
 
-          <DailyCompletionSection teams={data.completionTeams} />
-
           <section className="daily-responses" aria-labelledby="daily-responses-heading">
             <header className="daily-responses-heading">
               <div>
@@ -448,7 +440,6 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
                 localDate={selectedDate}
                 onSuccess={handleRespondSuccess}
                 pendingRuns={responsePendingRuns}
-                prefill={responsePrefill}
                 runQuestions={responseRunQuestions}
                 className="daily-response-form"
                 footer={<DialogCloseButton label="Cancelar" />}

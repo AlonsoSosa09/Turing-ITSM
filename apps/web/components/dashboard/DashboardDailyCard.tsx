@@ -65,10 +65,6 @@ export function DashboardDailyCard({
   const pendingRunsForDate = data.pendingRuns.filter(
     (run) => run.team_id === selectedTeam.id && run.local_date === selectedTeam.localDate,
   );
-  const responsePrefill = data.responsePrefills.find(
-    (prefill) => prefill.teamId === selectedTeam.id && prefill.localDate === selectedTeam.localDate,
-  );
-
   return (
     <section className="card dashboard-daily-card" aria-labelledby="dashboard-daily-title">
       <header className="dashboard-widget-header">
@@ -82,7 +78,6 @@ export function DashboardDailyCard({
         <DailyResponseForm
           localDate={selectedTeam.localDate}
           pendingRuns={pendingRunsForDate}
-          prefill={responsePrefill}
           runQuestions={data.runQuestions}
         />
       ) : (

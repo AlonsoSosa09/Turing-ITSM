@@ -2,7 +2,6 @@ import type {
   DailySubmissionAnswerRow,
   DailySubmissionRow,
 } from "@/app/actions/daily-runs";
-import { isDailyBlockerQuestion } from "@/lib/daily";
 
 type DailyResponsesByQuestionProps = {
   submissions: DailySubmissionRow[];
@@ -18,7 +17,16 @@ type AnswerItem = {
 };
 
 function isBlockerQuestion(questionText: string) {
-  return isDailyBlockerQuestion(undefined, questionText);
+  const normalized = questionText
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+  return (
+    normalized === "are there any blockers or risks?" ||
+    normalized.includes("blocker") ||
+    normalized.includes("bloqueo")
+  );
 }
 
 export function DailyResponsesByQuestion({
