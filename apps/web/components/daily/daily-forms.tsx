@@ -1,10 +1,12 @@
 "use client";
 
 import {
+  Fragment,
   useActionState,
   useEffect,
   useId,
   useRef,
+  useState,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -15,7 +17,9 @@ import {
   generateDailyRun,
   saveTeamDailyQuestions,
   saveTeamDailySchedule,
+  submitDailyActivityCompletion,
   submitDailyResponse,
+  type DailyActivityRow,
   type DailyActionState,
   type DailyQuestionRow,
   type DailyRunQuestionRow,
@@ -23,6 +27,7 @@ import {
   type DailyScheduleRow,
   type DailyTeamRow,
 } from "@/app/actions/daily-runs";
+import { isDailyCompletedWorkQuestion, isDailyPlannedWorkQuestion } from "@/lib/daily";
 
 const initialState: DailyActionState = { status: "idle", message: "" };
 
@@ -314,6 +319,8 @@ export function DailyResponseForm({
   localDate,
   pendingRuns,
   runQuestions,
+  activityItems = [],
+  previousCompletedActivities = [],
   onSuccess,
   className = "card daily-response-form",
   footer,
@@ -321,6 +328,8 @@ export function DailyResponseForm({
   localDate: string;
   pendingRuns: DailyRunRow[];
   runQuestions: DailyRunQuestionRow[];
+  activityItems?: DailyActivityRow[];
+  previousCompletedActivities?: string[];
   onSuccess?: () => void;
   className?: string;
   footer?: ReactNode;
@@ -337,9 +346,26 @@ export function DailyResponseForm({
       }, new Map<string, DailyRunQuestionRow>())
       .values(),
   );
+  const plannedQuestion = questions.find((question) => isDailyPlannedWorkQuestion(question.semantic_key, question.question_text));
+  const initialActivities = activityItems
+    .filter((activity) => activity.status === "planned")
+    .sort((left, right) => {
+      const leftCarried = left.carried_from_id !== null ? 0 : 1;
+      const rightCarried = right.carried_from_id !== null ? 0 : 1;
+      return leftCarried - rightCarried || left.position - right.position;
+    });
+  const carriedActivityIds = initialActivities
+    .filter((activity) => activity.carried_from_id !== null)
+    .map((activity) => activity.id);
+  const [activityTitles, setActivityTitles] = useState<string[]>(() => initialActivities.map((activity) => activity.title).concat(initialActivities.length === 0 ? [""] : []));
   if (pendingRuns.length === 0) {
     return <p className="muted">La ejecución seleccionada ya no está disponible para esta fecha.</p>;
   }
+  if (!plannedQuestion) {
+    return <p className="muted">La ejecución no tiene una pregunta de trabajo planificado válida.</p>;
+  }
+
+  const previousWorkValue = previousCompletedActivities.map((activity) => `- ${activity}`).join("\n");
 
   return (
     <MutationForm
@@ -359,11 +385,61 @@ export function DailyResponseForm({
           <p className="muted">Las preguntas compartidas se responden una sola vez y se aplican a las {pendingRuns.length} ejecuciones visibles.</p>
         </div>
         {questions.map((question, index) => {
-          const questionLabel = `${index + 1}. ${question.question_text}`;
+          const questionNumber = index + 1;
+
+          if (question.question_id === plannedQuestion.question_id) {
+            return (
+              <Fragment key={question.question_id}>
+                {carriedActivityIds.map((activityId) => (
+                  <input key={activityId} name="carriedActivityId" type="hidden" value={activityId} />
+                ))}
+                <fieldset className="daily-activity-field">
+                  <legend>{questionNumber}. {question.question_text}</legend>
+                  <p className="muted small-text">Agregá cada actividad por separado. Las actividades que quedaron pendientes del último Daily ya están incluidas.</p>
+                  <div className="daily-activity-list">
+                    {activityTitles.map((title, activityIndex) => {
+                      const isCarried = activityIndex < carriedActivityIds.length;
+                      return (
+                        <div className="daily-activity-input" key={`${carriedActivityIds[activityIndex] ?? "new"}-${activityIndex}`}>
+                          <label htmlFor={`daily-activity-${activityIndex}`}>Actividad {activityIndex + 1}</label>
+                          <input
+                            id={`daily-activity-${activityIndex}`}
+                            maxLength={400}
+                            minLength={1}
+                            name="plannedActivity"
+                            onChange={(event) => {
+                              const next = [...activityTitles];
+                              next[activityIndex] = event.target.value;
+                              setActivityTitles(next);
+                            }}
+                            required
+                            value={title}
+                          />
+                          {!isCarried && activityTitles.length > 1 ? (
+                            <button
+                              aria-label={`Quitar actividad ${activityIndex + 1}`}
+                              className="secondary-button daily-activity-remove"
+                              onClick={() => setActivityTitles((current) => current.filter((_, itemIndex) => itemIndex !== activityIndex))}
+                              type="button"
+                            >
+                              Quitar
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button className="secondary-button" onClick={() => setActivityTitles((current) => [...current, ""])} type="button">
+                    + Agregar actividad
+                  </button>
+                </fieldset>
+              </Fragment>
+            );
+          }
 
           return (
             <label className="daily-answer-field" key={question.question_id}>
-              <span>{questionLabel}</span>
+              <span>{questionNumber}. {question.question_text}</span>
               <textarea
                 autoComplete="off"
                 maxLength={4000}
@@ -372,6 +448,7 @@ export function DailyResponseForm({
                 placeholder="Escribí tu respuesta…"
                 required
                 rows={4}
+                defaultValue={isDailyCompletedWorkQuestion(question.semantic_key, question.question_text) ? previousWorkValue : undefined}
               />
             </label>
           );
@@ -381,6 +458,49 @@ export function DailyResponseForm({
           <span>Al enviar, la respuesta queda registrada como evidencia inmutable y no se puede editar.</span>
         </p>
       </div>
+    </MutationForm>
+  );
+}
+
+export function DailyActivityCompletionForm({
+  teamId,
+  logicalDate,
+  activities,
+}: {
+  teamId: string;
+  logicalDate: string;
+  activities: DailyActivityRow[];
+}) {
+  const plannedActivities = activities
+    .filter((activity) => activity.status === "planned")
+    .sort((left, right) => left.position - right.position);
+
+  if (plannedActivities.length === 0) {
+    return <p className="muted">No hay actividades planificadas para cerrar.</p>;
+  }
+
+  return (
+    <MutationForm
+      action={submitDailyActivityCompletion}
+      className="daily-completion-form"
+      pendingLabel="Guardando…"
+      submitLabel="Registrar cierre"
+    >
+      <input name="teamId" type="hidden" value={teamId} />
+      <input name="logicalDate" type="hidden" value={logicalDate} />
+      <fieldset className="daily-completion-list">
+        <legend>¿Qué acabaste?</legend>
+        <p className="muted small-text">Seleccioná las actividades completadas. Las demás pasarán automáticamente al próximo Daily.</p>
+        {plannedActivities.map((activity) => (
+          <label className="daily-completion-item" key={activity.id}>
+            <input name="completedActivityId" type="checkbox" value={activity.id} />
+            <span>{activity.title}</span>
+          </label>
+        ))}
+      </fieldset>
+      <p className="daily-response-note muted small-text">
+        El cierre es único por equipo y fecha local. Después de registrarlo no se puede editar ni repetir.
+      </p>
     </MutationForm>
   );
 }

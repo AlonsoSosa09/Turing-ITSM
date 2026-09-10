@@ -3,6 +3,7 @@
 import {
   createDailyQuestionSchema,
   deactivateDailyQuestionSchema,
+  dailyActivityCompletionSchema,
   generateDailyRunSchema,
   submitDailyResponseSchema,
   teamDailyQuestionsSchema,
@@ -72,6 +73,45 @@ export type DailyRunQuestionRow = {
   position: number;
 };
 
+export type DailyActivityRow = {
+  id: string;
+  team_id: string;
+  user_id: string;
+  logical_date: string;
+  title: string;
+  position: number;
+  carried_from_id: string | null;
+  status: "planned" | "completed" | "deleted" | "carried";
+};
+
+export type DailyActivityCompletionRow = {
+  id: string;
+  team_id: string;
+  user_id: string;
+  logical_date: string;
+  submitted_at: string;
+  timezone_snapshot: string;
+};
+
+export type DailyActivityCompletionItemRow = {
+  completion_id: string;
+  task_id: string;
+  title_snapshot: string;
+  position: number;
+  outcome: "completed" | "carried" | "deleted";
+};
+
+export type DailyActivityTeamData = {
+  teamId: string;
+  localDate: string;
+  timezoneName: string;
+  isAfterCutoff: boolean;
+  activities: DailyActivityRow[];
+  completion?: DailyActivityCompletionRow;
+  completionItems: DailyActivityCompletionItemRow[];
+  previousCompletedActivities: string[];
+};
+
 export type DailySubmissionRow = {
   id: string;
   user_id: string;
@@ -105,6 +145,7 @@ export type DailyAdminData = {
   currentUserId: string;
   pendingRuns: DailyRunRow[];
   runQuestions: DailyRunQuestionRow[];
+  activityTeams: DailyActivityTeamData[];
 };
 
 export type DailyMemberData = {
@@ -120,6 +161,7 @@ export type DailyMemberData = {
   currentUserId: string;
   responseTeamOptions: DailyTeamRow[];
   selectedResponseTeam?: DailyResponseTeam;
+  activityTeams: DailyActivityTeamData[];
 };
 
 const success = (message: string): DailyActionState => ({ status: "success", message });
@@ -240,6 +282,10 @@ function localDateParts(date: Date, timezoneName: string): Record<string, string
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, part.value]),
   );
+}
+
+function utcDateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 function resolveScheduledFor(
@@ -534,15 +580,23 @@ export async function submitDailyResponse(
 ): Promise<DailyActionState> {
   const runIds = formData.getAll("runId").map(String);
   const localDate = formData.get("localDate");
+  const plannedActivityTitles = formData.getAll("plannedActivity").map(String);
+  const carriedActivityIds = formData.getAll("carriedActivityId").map(String);
   const answers = Array.from(formData.entries())
     .filter(([name]) => name.startsWith("answer:"))
     .map(([name, value]) => ({ questionId: name.slice("answer:".length), answer: String(value) }));
-  const parsed = submitDailyResponseSchema.safeParse({ runIds, localDate, answers });
+  const parsed = submitDailyResponseSchema.safeParse({
+    runIds,
+    localDate,
+    plannedActivityTitles,
+    carriedActivityIds,
+    answers,
+  });
   if (!parsed.success) {
     return failure(
       parsed.error.issues.some((issue) => issue.path[0] === "localDate")
         ? "La fecha seleccionada no es válida."
-        : "Respondé cada pregunta con entre 1 y 4000 caracteres.",
+        : "Agregá al menos una actividad y respondé cada pregunta con entre 1 y 4000 caracteres.",
     );
   }
 
@@ -550,14 +604,15 @@ export async function submitDailyResponse(
   const { context, error: contextError } = await resolveInternalContext(supabase);
   if (!context) return failure(contextError ?? "Se requiere una cuenta interna activa.");
 
-  const { error } = await supabase.rpc("submit_daily_response_with_tasks", {
+  const { error } = await supabase.rpc("submit_daily_response_with_activities", {
     p_run_ids: parsed.data.runIds,
     p_answers: parsed.data.answers.map((answer) => ({
       question_id: answer.questionId,
       answer: answer.answer.trim(),
     })),
     p_local_date: parsed.data.localDate,
-    p_carried_task_ids: [],
+    p_activity_titles: parsed.data.plannedActivityTitles,
+    p_carried_activity_ids: parsed.data.carriedActivityIds,
   });
   if (error) {
     const message = error.message.toLowerCase();
@@ -573,6 +628,12 @@ export async function submitDailyResponse(
     if (message.includes("answers must")) {
       return failure("Las respuestas no coinciden con las preguntas pendientes. Actualizá la página e intentá nuevamente.");
     }
+    if (message.includes("planned-work question")) {
+      return failure("La ejecución no tiene una pregunta de trabajo planificado válida. Actualizá la página.");
+    }
+    if (message.includes("planned work") || message.includes("activity")) {
+      return failure("Revisá las actividades planificadas y actualizá la página antes de intentar nuevamente.");
+    }
     if (message.includes("exactly one team")) {
       return failure("Seleccioná un solo equipo antes de responder Daily.");
     }
@@ -580,6 +641,40 @@ export async function submitDailyResponse(
   }
 
   return success("Respuesta Daily registrada. Las respuestas enviadas no se pueden editar.");
+}
+
+export async function submitDailyActivityCompletion(
+  _previousState: DailyActionState,
+  formData: FormData,
+): Promise<DailyActionState> {
+  const parsed = dailyActivityCompletionSchema.safeParse({
+    teamId: formData.get("teamId"),
+    logicalDate: formData.get("logicalDate"),
+    completedActivityIds: formData.getAll("completedActivityId").map(String),
+  });
+  if (!parsed.success) return failure("Seleccioná las actividades que terminaste e intentá nuevamente.");
+
+  const supabase = await createClient();
+  const { context, error: contextError } = await resolveInternalContext(supabase);
+  if (!context) return failure(contextError ?? "Se requiere una cuenta interna activa.");
+
+  const { error } = await supabase.rpc("submit_daily_activity_completion", {
+    p_team_id: parsed.data.teamId,
+    p_logical_date: parsed.data.logicalDate,
+    p_completed_activity_ids: parsed.data.completedActivityIds,
+  });
+  if (error) {
+    const message = error.message.toLowerCase();
+    if (message.includes("after the team local 16:00 cutoff")) return failure("La selección se habilita después de las 16:00 del equipo.");
+    if (message.includes("does not match the team local date")) return failure("La fecha del Daily cambió. Actualizá la página.");
+    if (message.includes("already recorded")) return failure("El cierre de actividades ya fue registrado. Actualizá la página.");
+    if (message.includes("no planned daily activities")) return failure("No hay actividades planificadas para cerrar en este Daily.");
+    if (message.includes("missing or inaccessible")) return failure("Una actividad ya no está disponible para tu cuenta. Actualizá la página.");
+    return failure("No se pudo registrar el cierre de actividades Daily. Actualizá la página e intentá nuevamente.");
+  }
+
+  revalidateDaily();
+  return success("Cierre de actividades registrado. La evidencia queda inmutable.");
 }
 
 function countById(rows: Array<{ submission_id: string }>): Record<string, number> {
@@ -652,6 +747,126 @@ async function resolveMemberResponseTeam(
       ? { ...team, localDate: `${parts.year}-${parts.month}-${parts.day}` }
       : undefined,
   };
+}
+
+function adjacentScheduledDate(localDate: string, weekdays: number[], direction: -1 | 1): string | null {
+  const base = new Date(`${localDate}T00:00:00.000Z`);
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const candidate = new Date(base);
+    candidate.setUTCDate(candidate.getUTCDate() + offset * direction);
+    const isoWeekday = candidate.getUTCDay() === 0 ? 7 : candidate.getUTCDay();
+    if (weekdays.includes(isoWeekday)) return utcDateKey(candidate);
+  }
+  return null;
+}
+
+async function loadDailyActivityTeams(
+  supabase: SupabaseClient,
+  context: DailyContext,
+  teams: DailyTeamRow[],
+): Promise<{ data: DailyActivityTeamData[]; error?: string }> {
+  if (teams.length === 0) return { data: [] };
+
+  const teamIds = teams.map((team) => team.id);
+  const activeTeamsResult = await supabase
+    .from("teams")
+    .select("id")
+    .eq("tenant_id", context.tenantId)
+    .is("archived_at", null)
+    .in("id", teamIds);
+  if (activeTeamsResult.error) return { data: [], error: "No se pudieron validar los equipos de actividades Daily." };
+  const activeTeamIds = (activeTeamsResult.data ?? []).map((team) => String(team.id));
+  if (activeTeamIds.length === 0) return { data: [] };
+
+  const schedulesResult = await supabase
+    .from("team_daily_schedules")
+    .select("team_id, timezone_name, scheduled_weekdays")
+    .eq("tenant_id", context.tenantId)
+    .eq("is_active", true)
+    .in("team_id", activeTeamIds);
+  if (schedulesResult.error) return { data: [], error: "No se pudieron cargar los horarios de actividades Daily." };
+
+  const teamNames = new Map(teams.map((team) => [team.id, team.name]));
+  const teamContexts = (schedulesResult.data ?? []).flatMap((schedule) => {
+    const teamId = String(schedule.team_id);
+    if (!teamNames.has(teamId) || typeof schedule.timezone_name !== "string") return [];
+    const parts = localDateParts(new Date(), schedule.timezone_name);
+    const localDate = `${parts.year}-${parts.month}-${parts.day}`;
+    const weekdays = (schedule.scheduled_weekdays as number[] | null) ?? [];
+    const previousDate = adjacentScheduledDate(localDate, weekdays, -1);
+    return [{
+      teamId,
+      localDate,
+      timezoneName: schedule.timezone_name,
+      isAfterCutoff: Number(parts.hour ?? "0") >= 16,
+      previousDate,
+    }];
+  });
+  if (teamContexts.length === 0) return { data: [] };
+
+  const logicalDates = Array.from(new Set(teamContexts.flatMap((team) => [team.localDate, team.previousDate].filter((date): date is string => Boolean(date)))));
+  const [activitiesResult, completionsResult] = await Promise.all([
+    supabase
+      .from("daily_task_items")
+      .select("id, team_id, user_id, logical_date, title, position, carried_from_id, status")
+      .eq("tenant_id", context.tenantId)
+      .eq("user_id", context.userId)
+      .in("team_id", teamContexts.map((team) => team.teamId))
+      .in("logical_date", logicalDates)
+      .order("position"),
+    supabase
+      .from("daily_task_completions")
+      .select("id, team_id, user_id, logical_date, submitted_at, timezone_snapshot")
+      .eq("tenant_id", context.tenantId)
+      .eq("user_id", context.userId)
+      .in("team_id", teamContexts.map((team) => team.teamId))
+      .in("logical_date", logicalDates),
+  ]);
+  if (activitiesResult.error || completionsResult.error) {
+    return { data: [], error: "No se pudieron cargar las actividades Daily." };
+  }
+
+  const completions = (completionsResult.data ?? []) as DailyActivityCompletionRow[];
+  const completionIds = completions.map((completion) => completion.id);
+  const completionItemsResult = completionIds.length
+    ? await supabase
+        .from("daily_task_completion_items")
+        .select("completion_id, task_id, title_snapshot, position, outcome")
+        .eq("tenant_id", context.tenantId)
+        .in("completion_id", completionIds)
+        .order("position")
+    : { data: [], error: null };
+  if (completionItemsResult.error) return { data: [], error: "No se pudo cargar la evidencia de actividades Daily." };
+
+  const activities = (activitiesResult.data ?? []) as DailyActivityRow[];
+  const completionItems = (completionItemsResult.data ?? []) as DailyActivityCompletionItemRow[];
+  const data = teamContexts.map((team) => {
+    const currentActivities = activities.filter((activity) => activity.team_id === team.teamId && activity.logical_date === team.localDate);
+    const currentCompletion = completions.find((completion) => completion.team_id === team.teamId && completion.logical_date === team.localDate);
+    const previousCompletion = team.previousDate
+      ? completions.find((completion) => completion.team_id === team.teamId && completion.logical_date === team.previousDate)
+      : undefined;
+    const previousCompletedActivities = previousCompletion
+      ? completionItems
+          .filter((item) => item.completion_id === previousCompletion.id && item.outcome === "completed")
+          .sort((left, right) => left.position - right.position)
+          .map((item) => item.title_snapshot)
+      : [];
+    return {
+      teamId: team.teamId,
+      localDate: team.localDate,
+      timezoneName: team.timezoneName,
+      isAfterCutoff: team.isAfterCutoff,
+      activities: currentActivities,
+      completion: currentCompletion,
+      completionItems: currentCompletion
+        ? completionItems.filter((item) => item.completion_id === currentCompletion.id)
+        : [],
+      previousCompletedActivities,
+    };
+  });
+
+  return { data };
 }
 
 export async function getDailyAdminWorkspace(): Promise<{
@@ -728,6 +943,12 @@ export async function getDailyAdminWorkspace(): Promise<{
     id: string;
     full_name: string;
   }>;
+  const activityTeamsResult = await loadDailyActivityTeams(
+    supabase,
+    context,
+    (teamsResult.data ?? []) as DailyTeamRow[],
+  );
+  if (activityTeamsResult.error) return { error: activityTeamsResult.error };
   return {
     data: {
       teams: (teamsResult.data ?? []) as DailyTeamRow[],
@@ -746,6 +967,7 @@ export async function getDailyAdminWorkspace(): Promise<{
       currentUserId: context.userId,
       pendingRuns,
       runQuestions,
+      activityTeams: activityTeamsResult.data,
     },
   };
 }
@@ -808,6 +1030,12 @@ export async function getDailyMemberWorkspace(requestedTeamId?: string): Promise
     requestedTeamId,
   );
   if (responseTeamContext.error) return { error: responseTeamContext.error };
+  const activityTeamsResult = await loadDailyActivityTeams(
+    supabase,
+    context,
+    responseTeamContext.responseTeamOptions,
+  );
+  if (activityTeamsResult.error) return { error: activityTeamsResult.error };
   return {
     data: {
       pendingRuns,
@@ -825,6 +1053,7 @@ export async function getDailyMemberWorkspace(requestedTeamId?: string): Promise
       currentUserId: context.userId,
       responseTeamOptions: responseTeamContext.responseTeamOptions,
       selectedResponseTeam: responseTeamContext.selectedResponseTeam,
+      activityTeams: activityTeamsResult.data,
     },
   };
 }

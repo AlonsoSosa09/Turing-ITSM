@@ -9,7 +9,7 @@ import type {
   DailyTeamRow,
 } from "@/app/actions/daily-runs";
 import { Dialog, useDialogClose } from "@/components/admin/dialog";
-import { DailyResponseForm } from "./daily-forms";
+import { DailyActivityCompletionForm, DailyResponseForm } from "./daily-forms";
 import { DailyResponsesByQuestion } from "./daily-responses-by-question";
 import { DailyConfigPanel } from "./daily-config-panel";
 import { DailyContentCard } from "./daily-content-card";
@@ -79,6 +79,7 @@ type DailyExperienceProps = {
 export function DailyExperience({ role, data }: DailyExperienceProps) {
   const hasAdminAccess = isAdmin(role);
   const adminData = hasAdminAccess ? (data as DailyAdminData) : null;
+  const selectedResponseTeam = "selectedResponseTeam" in data ? data.selectedResponseTeam : undefined;
 
   const submissions = data.submissions;
   const submissionRuns = data.submissionRuns;
@@ -88,6 +89,7 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
   const currentUserId = data.currentUserId;
   const pendingRuns = data.pendingRuns;
   const runQuestions = data.runQuestions;
+  const activityTeams = data.activityTeams;
 
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [showingConfig, setShowingConfig] = useState(false);
@@ -101,8 +103,9 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
     setReferenceTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   }, []);
 
-  const todayKey = localDateKeyInTz(new Date(), referenceTimezone);
-  const [selectedDate, setSelectedDate] = useState<string>(todayKey);
+  const browserTodayKey = localDateKeyInTz(new Date(), referenceTimezone);
+  const todayKey = selectedResponseTeam?.localDate ?? browserTodayKey;
+  const [selectedDate, setSelectedDate] = useState<string>(selectedResponseTeam?.localDate ?? todayKey);
 
   const days = useMemo(() => {
     const todayUtc = new Date(`${todayKey}T00:00:00Z`);
@@ -168,6 +171,13 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
     () => runQuestions.filter((question) => responseRunIds.has(question.run_id)),
     [responseRunIds, runQuestions],
   );
+  const [selectedActivityTeamId, setSelectedActivityTeamId] = useState<string>(selectedResponseTeam?.id ?? "");
+  const activityTeam = activityTeams.length === 1
+    ? activityTeams[0]
+    : activityTeams.find((team) => team.teamId === selectedActivityTeamId);
+  const responseActivityTeam = responseTeamId
+    ? activityTeams.find((team) => team.teamId === responseTeamId && team.localDate === selectedDate)
+    : undefined;
   const hasResponded = Boolean(mySubmissionForDate);
   const canRespond = pendingResponseRunsForDate.length > 0;
 
@@ -239,6 +249,84 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
   const readonlyAnswers = mySubmissionForDate
     ? submissionAnswers.filter((answer) => answer.submission_id === mySubmissionForDate.id)
     : [];
+
+  function renderActivityPhase() {
+    if (activityTeams.length === 0) return null;
+    if (!activityTeam) {
+      return (
+        <section className="card daily-activities-phase" aria-labelledby="daily-activities-heading">
+          <header className="daily-activities-heading">
+            <div>
+              <p className="eyebrow">Actividades Daily</p>
+              <h2 id="daily-activities-heading">Elegí un equipo</h2>
+              <p className="muted">Las actividades y su cierre pertenecen a un equipo específico.</p>
+            </div>
+          </header>
+          <div className="filter-segment" role="group" aria-label="Equipo de actividades Daily">
+            {activityTeams.map((team) => (
+              <button key={team.teamId} onClick={() => setSelectedActivityTeamId(team.teamId)} type="button">
+                {reportTeams.find((candidate) => candidate.id === team.teamId)?.name ?? "Equipo Daily"}
+              </button>
+            ))}
+          </div>
+        </section>
+      );
+    }
+
+    const plannedActivities = activityTeam.activities.filter((activity) => activity.status === "planned");
+    if (plannedActivities.length === 0 && !activityTeam.completion) return null;
+    const teamName = reportTeams.find((team) => team.id === activityTeam.teamId)?.name ?? "Equipo Daily";
+
+    return (
+      <section className="card daily-activities-phase" aria-labelledby="daily-activities-heading">
+        <header className="daily-activities-heading">
+          <div>
+            <p className="eyebrow">{teamName} · {activityTeam.localDate}</p>
+            <h2 id="daily-activities-heading">Actividades Daily</h2>
+            <p className="muted">El plan de trabajo es independiente de los tableros y tareas de Project.</p>
+          </div>
+          {activityTeams.length > 1 ? (
+            <select
+              aria-label="Equipo de actividades Daily"
+              onChange={(event) => setSelectedActivityTeamId(event.target.value)}
+              value={activityTeam.teamId}
+            >
+              {activityTeams.map((team) => (
+                <option key={team.teamId} value={team.teamId}>
+                  {reportTeams.find((candidate) => candidate.id === team.teamId)?.name ?? "Equipo Daily"}
+                </option>
+              ))}
+            </select>
+          ) : null}
+        </header>
+        {activityTeam.completion ? (
+          <div className="daily-completion-result">
+            <span className="daily-tu-status answered">✓ Cierre registrado</span>
+            <ul className="daily-activity-list compact">
+              {activityTeam.completionItems.map((item) => (
+                <li key={item.task_id}>
+                  <span>{item.title_snapshot}</span>
+                  <strong>{item.outcome === "completed" ? "Completada" : "Pasó al próximo Daily"}</strong>
+                </li>
+              ))}
+            </ul>
+            <p className="muted small-text">El cierre quedó registrado como evidencia inmutable.</p>
+          </div>
+        ) : activityTeam.isAfterCutoff ? (
+          <DailyActivityCompletionForm
+            activities={activityTeam.activities}
+            logicalDate={activityTeam.localDate}
+            teamId={activityTeam.teamId}
+          />
+        ) : (
+          <div className="daily-activity-cutoff-note">
+            <span className="daily-tu-status">Disponible después de las 16:00</span>
+            <p className="muted">Después del horario de corte vas a poder seleccionar qué actividades terminaste. Las demás pasarán al próximo Daily.</p>
+          </div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="module-page daily-page daily-experience">
@@ -369,6 +457,8 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
             )}
           </section>
 
+          {renderActivityPhase()}
+
           <section className="daily-responses" aria-labelledby="daily-responses-heading">
             <header className="daily-responses-heading">
               <div>
@@ -441,6 +531,8 @@ export function DailyExperience({ role, data }: DailyExperienceProps) {
                 onSuccess={handleRespondSuccess}
                 pendingRuns={responsePendingRuns}
                 runQuestions={responseRunQuestions}
+                activityItems={responseActivityTeam?.activities}
+                previousCompletedActivities={responseActivityTeam?.previousCompletedActivities}
                 className="daily-response-form"
                 footer={<DialogCloseButton label="Cancelar" />}
               />
