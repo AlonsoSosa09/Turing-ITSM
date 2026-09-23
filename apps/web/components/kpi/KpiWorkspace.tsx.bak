@@ -1,0 +1,289 @@
+"use client";
+
+import { useCallback, useState } from "react";
+import { hasPermission, roleLabels, type InternalRole } from "@/lib/rbac";
+import {
+  getKpiDashboard,
+  saveJiraIntegration,
+  triggerJiraSync,
+  type KpiDashboardData,
+  type KpiActionState,
+} from "@/app/actions/kpi";
+import { hasPermission } from "@/lib/rbac";
+import { useKpiDashboardRealtime } from "@/hooks/useKpiRealtime";
+
+type KpiWorkspaceProps = {
+  role: InternalRole;
+  tenantId: string;
+  userId: string;
+};
+
+export function KpiWorkspace({ role, tenantId, userId }: KpiWorkspaceProps) {
+  const [dashboard, setDashboard] = useState<KpiDashboardData>({
+    velocity: null,
+    activeBurndown: [],
+    assignmentGrid: [],
+    spCompletedOverTime: [],
+    dailyAnnotations: [],
+    integrations: [],
+    tenantId: "",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const canAdmin = hasPermission(role, "kpi:admin");
+
+  const loadDashboard = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    const { data, error } = await getKpiDashboard();
+    if (error) {
+      setError(error);
+      setDashboard({
+        velocity: null,
+        activeBurndown: [],
+        assignmentGrid: [],
+        spCompletedOverTime: [],
+        dailyAnnotations: [],
+        integrations: [],
+        tenantId: "",
+      });
+    } else if (data) {
+      setDashboard(data);
+    }
+    setIsLoading(false);
+  }, []);
+
+  // Subscribe to realtime updates
+  const handleRealtimeUpdate = useCallback(() => {
+    loadDashboard();
+  }, []);
+
+  // Subscribe to realtime updates for KPI data
+  useKpiDashboardRealtime(tenantId, handleRealtimeUpdate, true);
+
+  const handleSaveIntegration = async (
+    _prev: KpiActionState,
+    formData: FormData
+  ): Promise<KpiActionState> => {
+    const result = await saveJiraIntegration(_prev, formData);
+    if (result.status === "success") {
+      loadDashboard();
+    }
+    return result;
+  };
+
+  const handleTriggerSync = async (
+    _prev: KpiActionState,
+    formData: FormData
+  ): Promise<KpiActionState> => {
+    const result = await triggerJiraSync(_prev, formData);
+    if (result.status === "success") {
+      loadDashboard();
+    }
+    return result;
+  };
+
+  return (
+    <section className="module-page page-stack kpi-page">
+      <header className="page-header kpi-page-header">
+        <div>
+          <p className="eyebrow">{roleLabels[role]} · KPI Board</p>
+          <h1>Turing — Tablero KPI</h1>
+          <p className="muted page-description">
+            Burndowns, velocity, story points y anotaciones daily cruzadas por sprint.
+            Actualizado en tiempo real vía Supabase Realtime y webhooks Jira.
+          </p>
+        </div>
+        <div className="kpi-header-tools">
+          {dashboard.integrations.length > 0 ? (
+            <KpiSyncControls
+              integrations={dashboard.integrations}
+              action={triggerJiraSync}
+            />
+          ) : null}
+        </div>
+      </header>
+
+      {error ? (
+        <section className="card module-status-panel">
+          <span className="status-badge neutral">Carga KPI</span>
+          <h2>No se pudo cargar el tablero KPI</h2>
+          <p className="muted">{error}</p>
+        </section>
+      ) : null}
+
+      {isLoading ? (
+        <section className="card module-status-panel" aria-busy="true">
+          <p className="eyebrow">KPI</p>
+          <h2>Cargando tablero KPI…</h2>
+          <p aria-live="polite" className="muted" role="status">
+            Cargando burndowns, velocity, story points y anotaciones daily.
+          </p>
+        </section>
+      ) : (
+        <>
+          <KpiRow>
+            <VelocityCard velocity={dashboard.velocity} />
+          </KpiRow>
+
+          <div className="kpi-grid kpi-grid-main">
+            <section className="card glass-panel">
+              <header className="panel-header">
+                <p className="eyebrow">Sprint activo</p>
+                <h2>Burndown</h2>
+              </header>
+              <SprintBurndownChart points={dashboard.activeBurndown} />
+            </section>
+
+            <section className="card glass-panel">
+              <header className="panel-header">
+                <p className="eyebrow">Histórico</p>
+                <h2>Story Points completados</h2>
+              </header>
+              <SpCompletedChart rows={dashboard.spCompletedOverTime} />
+            </section>
+          </div>
+
+          <div className="kpi-grid kpi-grid-bottom">
+            <section className="card glass-panel">
+              <header className="panel-header">
+                <p className="eyebrow">Distribución</p>
+                <h2>Story points por persona</h2>
+              </header>
+              <SpAssignmentGrid rows={dashboard.assignmentGrid} />
+            </section>
+
+            <section className="card glass-panel">
+              <header className="panel-header">
+                <p className="eyebrow">Daily</p>
+                <h2>Anotaciones del equipo</h2>
+              </header>
+              <DailyAnnotationsSidePanel rows={dashboard.dailyAnnotations} />
+            </section>
+          </div>
+
+          {canAdmin ? (
+            <section className="card glass-panel kpi-admin-panel">
+              <header className="panel-header">
+                <p className="eyebrow">Admin</p>
+                <h2>Conexión Jira</h2>
+                <p className="muted">
+                  Registrá una integración nueva o actualizá la existente.
+                  Los tokens se encriptan via pgcrypto en producción.
+                </p>
+              </header>
+              <JiraIntegrationForm
+                action={saveJiraIntegration}
+                integrations={dashboard.integrations}
+              />
+            </section>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+export async function KpiWorkspaceServer({ role, tenantId, userId }: {
+  role: string;
+  tenantId: string;
+  userId: string;
+}) {
+  const { data, error } = await getKpiDashboard();
+  const canAdmin = hasPermission(role as any, "kpi:admin");
+
+  const dashboard: KpiDashboardData = data ?? {
+    velocity: null,
+    activeBurndown: [],
+    assignmentGrid: [],
+    spCompletedOverTime: [],
+    dailyAnnotations: [],
+    integrations: [],
+    tenantId: "",
+  };
+
+  return (
+    <section className="module-page page-stack kpi-page">
+      <header className="page-header kpi-page-header">
+        <div>
+          <p className="eyebrow">KPI Board</p>
+          <h1>Turing — Tablero KPI</h1>
+          <p className="muted page-description">
+            Burndowns, velocity, story points y anotaciones daily cruzadas por sprint,
+            actualizadas desde Jira en tiempo real vía webhooks + Supabase Realtime.
+          </p>
+        </div>
+        <div className="kpi-header-tools">
+          {dashboard.integrations.length > 0 ? (
+            <KpiSyncControls integrations={dashboard.integrations} action={triggerJiraSync} />
+          ) : null}
+        </div>
+      </header>
+
+      {error ? (
+        <section className="card module-status-panel">
+          <span className="status-badge neutral">Carga KPI</span>
+          <h2>No se pudo cargar el tablero KPI</h2>
+          <p className="muted">{error}</p>
+        </section>
+      ) : null}
+
+      <KpiRow>
+        <VelocityCard velocity={dashboard.velocity} />
+      </KpiRow>
+
+      <div className="kpi-grid kpi-grid-main">
+        <section className="card glass-panel">
+          <header className="panel-header">
+            <p className="eyebrow">Sprint activo</p>
+            <h2>Burndown</h2>
+          </header>
+          <SprintBurndownChart points={dashboard.activeBurndown} />
+        </section>
+
+        <section className="card glass-panel">
+          <header className="panel-header">
+            <p className="eyebrow">Histórico</p>
+            <h2>Story Points completados</h2>
+          </header>
+          <SpCompletedChart rows={dashboard.spCompletedOverTime} />
+        </section>
+      </div>
+
+      <div className="kpi-grid kpi-grid-bottom">
+        <section className="card glass-panel">
+          <header className="panel-header">
+            <p className="eyebrow">Distribución</p>
+            <h2>Story points por persona</h2>
+          </header>
+          <SpAssignmentGrid rows={dashboard.assignmentGrid} />
+        </section>
+
+        <section className="card glass-panel">
+          <header className="panel-header">
+            <p className="eyebrow">Daily</p>
+            <h2>Anotaciones del equipo</h2>
+          </header>
+          <DailyAnnotationsSidePanel rows={dashboard.dailyAnnotations} />
+        </section>
+      </div>
+
+      {canAdmin ? (
+        <section className="card glass-panel kpi-admin-panel">
+          <header className="panel-header">
+            <p className="eyebrow">Admin</p>
+            <h2>Conexión Jira</h2>
+            <p className="muted">
+              Registrá una integración nueva o actualizá la existente. Los tokens se encriptan via pgcrypto en producción.
+            </p>
+          </header>
+          <JiraIntegrationForm
+            action={saveJiraIntegration}
+            integrations={dashboard.integrations}
+          />
+        </section>
+      ) : null}
+    </section>
+  );
+}

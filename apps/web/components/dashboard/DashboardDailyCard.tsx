@@ -65,10 +65,9 @@ export function DashboardDailyCard({
   const pendingRunsForDate = data.pendingRuns.filter(
     (run) => run.team_id === selectedTeam.id && run.local_date === selectedTeam.localDate,
   );
-  const responsePrefill = data.responsePrefills.find(
-    (prefill) => prefill.teamId === selectedTeam.id && prefill.localDate === selectedTeam.localDate,
+  const activityTeam = data.activityTeams.find(
+    (team) => team.teamId === selectedTeam.id && team.localDate === selectedTeam.localDate,
   );
-
   return (
     <section className="card dashboard-daily-card" aria-labelledby="dashboard-daily-title">
       <header className="dashboard-widget-header">
@@ -82,8 +81,9 @@ export function DashboardDailyCard({
         <DailyResponseForm
           localDate={selectedTeam.localDate}
           pendingRuns={pendingRunsForDate}
-          prefill={responsePrefill}
           runQuestions={data.runQuestions}
+          activityItems={activityTeam?.activities}
+          previousCompletedActivities={activityTeam?.previousCompletedActivities}
         />
       ) : (
         <p className="empty-state">No hay una ejecución Daily pendiente para este equipo.</p>
