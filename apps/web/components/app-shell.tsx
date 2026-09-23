@@ -13,8 +13,14 @@ type AppShellProps = {
 };
 
 export function AppShell({ children, moduleSlug, user }: AppShellProps) {
+	const shellClassName = [
+		"app-layout",
+		moduleSlug === "home" ? "app-layout-home" : "",
+		moduleSlug === "dashboard" ? "app-layout-dashboard" : "",
+	].filter(Boolean).join(" ");
+
 	return (
-		<div className={`app-layout${moduleSlug === "home" ? " app-layout-home" : ""}`}>
+		<div className={shellClassName}>
 			<TopNavigation user={user} />
 			<main className="content-shell" id="main-content" tabIndex={-1}>
 				{children}

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.modules.jira.router import router as jira_router
 
 settings = get_settings()
 
@@ -39,5 +40,11 @@ def domains() -> dict[str, list[str]]:
             "reports",
             "audit_log",
             "knowledge_base",
+            "jira",
         ]
     }
+
+
+# Include Jira integration router (feature-flagged)
+if settings.jira_integration_v2:
+    app.include_router(jira_router)

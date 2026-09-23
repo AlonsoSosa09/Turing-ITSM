@@ -355,3 +355,138 @@ export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type UpdateTaskStatusInput = z.infer<typeof updateTaskStatusSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
+
+// KPI Dashboard ----------------------------------------------------------------
+
+export const getKpiDashboardSchema = z.object({
+  boardId: z.number().int().positive().optional().nullable(),
+  sprintId: z.number().int().positive().optional().nullable(),
+  projectId: z.string().uuid().optional().nullable(),
+  velocitySprintCount: z.number().int().min(1).max(50).optional().default(6),
+  burndownSprintId: z.number().int().positive().optional().nullable(),
+  granularity: z.enum(["D", "W", "M"]).optional().default("W"),
+  currency: z.enum(["USD", "MXN"]).optional().default("USD"),
+  fromDate: z.string().date().optional().nullable(),
+  toDate: z.string().date().optional().nullable(),
+  annotationsTeamId: z.string().uuid().optional().nullable(),
+  annotationsSprintId: z.number().int().positive().optional().nullable(),
+});
+
+export type GetKpiDashboard = z.infer<typeof getKpiDashboardSchema>;
+
+export const getDashboardAggregateSchema = z.object({
+  teamId: z.string().uuid().optional().nullable(),
+  projectId: z.string().uuid().optional().nullable(),
+  selectedDate: z.string().date().optional(),
+  range: z.enum(["7d", "30d", "90d"]).optional().default("30d"),
+  compactCardsPageSize: z.number().int().min(1).max(10).optional().default(5),
+});
+
+export type GetDashboardAggregateInput = z.infer<typeof getDashboardAggregateSchema>;
+
+// Jira Integration ------------------------------------------------------------
+
+const jiraDomainSchema = z.string().trim().min(4).max(253).transform((v) => v.trim());
+const jiraEmailSchema = z.string().trim().email().max(254);
+const jiraApiTokenSchema = z.string().trim().min(8).max(512);
+const storyPointsFieldSchema = z.string().trim().min(1).max(80).default("customfield_10016");
+
+export const createJiraIntegrationSchema = z.object({
+  jiraDomain: jiraDomainSchema,
+  jiraEmail: jiraEmailSchema,
+  jiraApiToken: jiraApiTokenSchema,
+  defaultBoardId: z.number().int().positive().optional().nullable(),
+  storyPointsField: storyPointsFieldSchema,
+});
+
+export const updateJiraIntegrationSchema = z.object({
+  jiraDomain: jiraDomainSchema.optional(),
+  jiraEmail: jiraEmailSchema.optional(),
+  jiraApiToken: jiraApiTokenSchema.optional(),
+  defaultBoardId: z.number().int().positive().optional().nullable(),
+  storyPointsField: storyPointsFieldSchema.optional(),
+});
+
+export type CreateJiraIntegration = z.infer<typeof createJiraIntegrationSchema>;
+export type UpdateJiraIntegration = z.infer<typeof updateJiraIntegrationSchema>;
+
+export const triggerJiraSyncSchema = z.object({
+  integrationId: z.string().uuid(),
+  mode: z.enum(["full", "incremental"]).default("full"),
+  boardIds: z.array(z.number().int().positive()).optional().nullable(),
+});
+
+export type TriggerJiraSync = z.infer<typeof triggerJiraSyncSchema>;
+
+// KPI Dashboard Types (matching TuringITSM v4 RPC signatures)
+
+export type SprintBurndownPoint = {
+  as_of_date: string;
+  scope: number;
+  completed: number;
+  remaining: number;
+  ideal: number | null;
+};
+
+export type AssignedSpByMemberRow = {
+  assignee_email: string;
+  assignee_display_name: string;
+  assigned_sp: number;
+  completed_sp: number;
+  pct_of_total_sp: number;
+};
+
+export type SpCompletedOverTimeRow = {
+  bucket: string;
+  completed_sp: number;
+  completed_issues: number;
+};
+
+export type CloudCostPivotRow = {
+  bucket: string;
+  service_name: string;
+  provider_name: string | null;
+  cost_usd: number;
+  cost_mxn: number;
+};
+
+export type DailyAnnotationForSprintRow = {
+  team_name: string;
+  user_id: string;
+  full_name: string | null;
+  local_date: string;
+  submission_id: string | null;
+  answers: Array<{
+    question_text: string;
+    answer_text: string | null;
+  }> | null;
+};
+
+export type VelocitySummaryRow = {
+  sprints_count: number;
+  avg_sp_completed: number;
+  total_sp_completed: number;
+  latest_sprint_id: number | null;
+  latest_sprint_name: string | null;
+};
+
+export type KpiDashboardData = {
+  velocity: VelocitySummaryRow | null;
+  activeBurndown: SprintBurndownPoint[];
+  assignmentGrid: AssignedSpByMemberRow[];
+  spCompletedOverTime: SpCompletedOverTimeRow[];
+  dailyAnnotations: DailyAnnotationForSprintRow[];
+  integrations: Array<{
+    id: string;
+    jira_domain: string;
+    default_board_id: number | null;
+    last_synced_at: string | null;
+    sync_status: string | null;
+  }>;
+  tenantId: string;
+};
+
+export type KpiActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
